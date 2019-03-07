@@ -8,3 +8,5 @@ The overall process is to:
 4. Use the local models to propose new state-feedback gains and improve the LQG controllers.
 
 ![Image](lqg.png)
+
+The image on the left is a rendering of the robot scene, and on the right is a plot of trajectories for each iteration.
