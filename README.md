@@ -4,7 +4,7 @@ Locally fitted dynamics for linear quadratic Gaussian controllers of a simulated
 The overall process is to:
 1. Generate random controls for each timestep of the trajectory.
 2. Execute the controls a number of times (with some noise) to sample the dynamics around the trajectory.
-3. Fit locally linear models at each timestep using the samples of each timestep. 
-4. Use the local models to improve the LQG controllers.
+3. Fit locally linear models at each timestep using the samples of each state and action. 
+4. Use the local models to propose new state-feedback gains and improve the LQG controllers.
 
 ![Image](lqg.png)
