@@ -1,0 +1,156 @@
+#!/usr/bin/python3
+
+import numpy as np, cv2
+import palettable
+from env import ArmEnv
+import matplotlib.pyplot as plt
+
+TRAJ = 10
+LEN  = 150
+np.random.seed(0)
+
+
+def lqr(F, f, C, c):
+    c = c.reshape((obs_size+act_size,))
+
+    V = C[:obs_size,:obs_size]
+    v = np.zeros((obs_size))
+
+    lqr_T = 100
+    for lqr_t in reversed(range(lqr_T)):
+        Qt = C + np.matmul(F.T, np.matmul(V, F))
+        qt = c + np.matmul(F.T, v)
+
+        Qxx = Qt[:obs_size, :obs_size]
+        Quu = Qt[-act_size:,-act_size:]
+        Qux = Qt[-act_size:,:-act_size]
+        Qxu = Qt[:-act_size, -act_size:]
+        qx = qt[:obs_size]
+        qu = qt[-act_size:]
+
+        Quu_inv = np.linalg.inv(Quu)
+
+        Kt = -np.matmul(Quu_inv, Qux)
+        kt = -np.matmul(Quu_inv, qu)
+
+        V = Qxx + np.matmul(Qxu, Kt) + np.matmul(Kt.T, Qux) + np.matmul(Kt.T, np.matmul(Quu, Kt))
+        v = qx + np.matmul(Qxu, kt) + np.matmul(Kt.T, qu) + np.matmul(Kt.T, np.matmul(Quu, kt))
+    return Kt, kt
+
+
+
+def compute_costs(controls, constrain = False):
+    C = np.eye(obs_size + act_size)
+    C[2,2] = 5
+    C[3,3] = 10
+    C[4,4] = 20
+
+    c = np.zeros(obs_size+act_size,)
+    eta = 1
+
+    C_traj = []
+    c_traj = []
+    for t in range(LEN):
+        K, k = controls[t]
+        sig  = controller_covariance
+        C_t = C/eta + np.vstack([np.hstack([K.T.dot(sig).dot(K), -K.T.dot(sig)]), 
+                                 np.hstack([-sig.dot(K), sig])])
+        c_t = c/eta + np.hstack([K.T.dot(sig).dot(k), -sig.dot(k)])
+
+        if constrain:
+            C_traj.append(C_t)
+            c_traj.append(c_t)
+        else:
+            C_traj.append(C)
+            c_traj.append(c)
+    return C_traj, c_traj
+
+
+frame = 0
+def collect_trajectories(controls, state_hats, action_hats):
+    global points_img, frame
+    for i in range(TRAJ):
+        points = []
+        tau = []
+        state = env.reset()
+        for t in range(LEN):
+            action = get_action(controls[t], state, state_hats[t], action_hats[t])
+            if i == 0:
+                cv2.imwrite("./frames/%03d" % frame + ".png", env.render(iteration=iteration))
+                frame += 1
+                actions.append(action)
+                states.append(state)
+                points.append(env.tool)
+            else:
+                action += np.random.multivariate_normal(np.zeros_like(action), controller_covariance, (1)).squeeze()
+            nstate, _, _ = env.step(action)
+            tau.append((state, action, nstate))
+            state = nstate
+        dataset.append(tau)
+        iterations_points.append(points)
+
+    points_img = np.zeros((env.W, env.W, 3), np.uint8)
+    points_img[:] = (200, 200, 210)
+    for ci, points in enumerate(iterations_points):
+        color = palettable.wesanderson.GrandBudapest2_4.mpl_colormap((ci)/len(iterations_points))
+        color = [c*255 for c in [color[2], color[1], color[0]]]
+        for p in points:
+            pi = (int(p[1]), int(p[0]))
+            points_img = cv2.circle(points_img, pi, 4, color, -1, lineType=cv2.LINE_AA)
+    cv2.imshow("Points", points_img)
+    cv2.waitKey(1)
+
+def fit_models():
+    models = []
+    for t in range(LEN):
+        transition = [tau[t] for tau in dataset]
+        x = np.zeros((TRAJ, obs_size+act_size))
+        for i, trans in enumerate(transition):
+            x[i,:] = np.hstack((trans[0], trans[1]))
+
+        y = np.array([trans[2] for trans in transition])
+
+        F,f,_,_ = np.linalg.lstsq(x,y,rcond=None)
+        F = F.T
+
+        models.append((F, f))
+    return models
+
+def improve_controllers(controls, models):
+    C, c = compute_costs(controls, constrain=True)
+    for t in range(LEN):
+        F, f = models[t]
+        K, k = lqr(F, f, C[t], c[t])
+        controls[t] = (K, k)
+    return controls
+
+def get_action(gains, state, state_hat, action_hat):
+    K, k = gains
+    action = (np.matmul(K, (state - state_hat)) + k) + action_hat
+    return action.squeeze()
+
+def init_controls():
+    controls = []
+    for t in range(LEN):
+        controls.append((0.1*np.random.randn(act_size, obs_size), -0.01*np.random.randn(act_size)))
+
+    return controls
+
+env = ArmEnv()
+obs_size = 2
+act_size = 3
+
+controller_covariance = np.eye(act_size)*0.01
+controls = init_controls()
+
+iterations_points = []
+iteration = 0
+while True:
+    dataset  = []
+    states   = [np.zeros((obs_size,))]*LEN
+    actions  = [np.zeros((act_size,))]*LEN
+    collect_trajectories(controls, states, actions)
+    models   = fit_models()
+    controls = improve_controllers(controls, models)
+    iteration += 1
+
